@@ -1,0 +1,76 @@
+services:
+
+  # ── FastAPI Application ───────────────────────────────────────────────────
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otelcollector:4317"
+      APP_NAME: "fastapi-otel-demo"
+      ENVIRONMENT: "development"
+    depends_on:
+      otelcollector:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── OpenTelemetry Collector ───────────────────────────────────────────────
+  otelcollector:
+    image: otel/opentelemetry-collector-contrib:0.114.0
+    volumes:
+      - ./observability/otelcol-config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    ports:
+      - "4317:4317"     # OTLP gRPC (app → collector)
+      - "4318:4318"     # OTLP HTTP (curl debugging)
+      - "8889:8889"     # Prometheus scrape endpoint
+      - "13133:13133"   # Health check
+      - "55679:55679"   # zPages debug UI
+    restart: unless-stopped
+
+  # ── Tempo (Distributed Traces) ────────────────────────────────────────────
+  tempo:
+    image: grafana/tempo:2.7.0
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo-config.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"     # Tempo HTTP API (Grafana queries here)
+      - "4319:4317"     # OTLP gRPC ingestion (host 4317 is taken by collector)
+    restart: unless-stopped
+
+  # ── Prometheus (Metrics Storage) ──────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
+    restart: unless-stopped
+
+  # ── Grafana (Visualization) ───────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:11.4.0
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  tempo-data:
